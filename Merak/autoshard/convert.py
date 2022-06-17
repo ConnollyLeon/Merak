@@ -28,16 +28,20 @@ import inspect
 import random
 import os
 import transformers
+
+
 def money_pathch_is_torch_fx_available():
     return True
+
+
 transformers.file_utils.is_torch_fx_available = money_pathch_is_torch_fx_available
 
-from transformers.utils.fx import (HFTracer, 
-                        _generate_random_int, 
-                        transform_to_dynamic_input_, 
-                        _generate_supported_model_classes,
-                        _SUPPORTED_MODELS, 
-                        _SUPPORTED_MODELS_FOR_DYNAMIC_AXES)
+from transformers.utils.fx import (HFTracer,
+                                   _generate_random_int,
+                                   transform_to_dynamic_input_,
+                                   _generate_supported_model_classes,
+                                   _SUPPORTED_MODELS,
+                                   _SUPPORTED_MODELS_FOR_DYNAMIC_AXES)
 
 from .graph_shard import shard_model_transformers
 from ..modules.layer_proxy import LinearProxy, Conv1DProxy
@@ -45,40 +49,26 @@ from ..modules.transformer_blocks import PipedGPT2Block
 
 import gc
 
+from transformers import PreTrainedModel
 
-from transformers import (
-    CONFIG_MAPPING,
-    MODEL_FOR_CAUSAL_LM_MAPPING,
-    MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING,
-    MODEL_FOR_MASKED_LM_MAPPING,
-    MODEL_FOR_MULTIPLE_CHOICE_MAPPING,
-    MODEL_FOR_NEXT_SENTENCE_PREDICTION_MAPPING,
-    MODEL_FOR_PRETRAINING_MAPPING,
-    MODEL_FOR_QUESTION_ANSWERING_MAPPING,
-    MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING,
-    MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
-    MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING,
-    MODEL_MAPPING,
-    GPT2DoubleHeadsModel,
-    PretrainedConfig,
-    PreTrainedModel,
-    logging,
-)
 from transformers.models.auto import get_values
+
 
 def hf_fx_compatibility(model):
     added_model = tuple(_generate_supported_model_classes('vit'))
-    transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
+    transformers_fx_models = tuple(_SUPPORTED_MODELS + _SUPPORTED_MODELS_FOR_DYNAMIC_AXES + added_model)
     if isinstance(model, PreTrainedModel) and isinstance(model, transformers_fx_models):
         return True
     else:
         return False
-    
+
+
 default_leaf_modules = (LinearProxy, Conv1DProxy, PipedGPT2Block)
+
 
 def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     added_model = tuple(_generate_supported_model_classes('vit'))
-    transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
+    transformers_fx_models = tuple(_SUPPORTED_MODELS + _SUPPORTED_MODELS_FOR_DYNAMIC_AXES + added_model)
     # print_rank_0(transformers_fx_models)
     if isinstance(model, transformers_fx_models):
         model.cpu()
@@ -99,10 +89,10 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
 
         traced = symbolic_trace(
             model,
-            input_names = args.input_names,
-            batch_size = args.per_device_train_batch_size,
-            sequence_length = args.seq_length,
-            extra_leaf_modules = extra_leaf_modules,
+            input_names=args.input_names,
+            batch_size=args.per_device_train_batch_size,
+            sequence_length=args.seq_length,
+            extra_leaf_modules=extra_leaf_modules,
             trace_batch=trace_batch,
         )
     else:
@@ -112,9 +102,8 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
             extra_leaf_modules = tuple([extra_leaf_modules])
         else:
             assert isinstance(extra_leaf_modules, tuple), 'leaf_modules should be tuple'
-        
 
-        tracer = LayerProxyTracer(leaf_modules=default_leaf_modules+extra_leaf_modules)
+        tracer = LayerProxyTracer(leaf_modules=default_leaf_modules + extra_leaf_modules)
         traced_graph = tracer.trace(model)
         traced = torch.fx.GraphModule(model, traced_graph)
 
@@ -133,8 +122,6 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     for node in traced.graph.nodes:
         if len(list(node.users)) > output_node_threshold:
             output_nodes_count[node.name] = len(list(node.users))
-
-
 
     result, input_to_shard = shard_model_transformers(
         traced, model, args.shard_count, output_nodes_count
@@ -165,13 +152,14 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
 
     return model, result, input_to_shard
 
+
 class LayerProxyTracer(torch.fx.Tracer):
     """Tracer with an extended set of leaf nn.Modules."""
 
     def __init__(self, leaf_modules):
         super().__init__()
         self.leaf_modules = leaf_modules
-    
+
     def is_manual_leaf_module(self, m):
         for i in self.leaf_modules:
             if isinstance(m, i):
@@ -183,7 +171,8 @@ class LayerProxyTracer(torch.fx.Tracer):
 
 
 class MpTracer(HFTracer):
-    def __init__(self, leaf_modules=(), manual_input_shape = None, trace_batch=None, batch_size=1, sequence_length=[128, 128], num_choices=-1):
+    def __init__(self, leaf_modules=(), manual_input_shape=None, trace_batch=None, batch_size=1,
+                 sequence_length=[128, 128], num_choices=-1):
         super().__init__(batch_size, sequence_length, num_choices)
         self.leaf_modules = leaf_modules
         if manual_input_shape is not None:
@@ -196,69 +185,35 @@ class MpTracer(HFTracer):
             if isinstance(m, i):
                 return True
         return False
-        
+
     def is_leaf_module(self, m: torch.nn.Module, model_qualified_name: str) -> bool:
         return super().is_leaf_module(m, model_qualified_name) or self.is_manual_leaf_module(m)
-    
+
     def _generate_dummy_input(self, model, input_name):
         """Generates dummy input for model inference recording."""
-        model_class = model.__class__
-        # device = model.device
-        device = 'cpu'
+        device = model.device  # Note: when calling this method, model.device should always be 'cpu'
         inputs_dict = dict()
         if self.trace_batch is not None:
             return self.trace_batch
-
-        if input_name in ["labels", "start_positions", "end_positions"]:
-            batch_size = self.encoder_shape[0]
-            if model_class in get_values(MODEL_FOR_MULTIPLE_CHOICE_MAPPING):
-                inputs_dict["labels"] = torch.ones(batch_size, dtype=torch.long, device=device)
-            elif model_class in get_values(MODEL_FOR_QUESTION_ANSWERING_MAPPING):
-                inputs_dict["start_positions"] = torch.zeros(batch_size, dtype=torch.long, device=device)
-                inputs_dict["end_positions"] = torch.zeros(batch_size, dtype=torch.long, device=device)
-            elif model_class in [
-                *get_values(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING),
-                *get_values(MODEL_FOR_NEXT_SENTENCE_PREDICTION_MAPPING),
-                *get_values(MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING),
-            ]:
-                inputs_dict["labels"] = torch.zeros(batch_size, dtype=torch.long, device=device)
-            elif model_class in [
-                *get_values(MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING),
-                *get_values(MODEL_FOR_CAUSAL_LM_MAPPING),
-                *get_values(MODEL_FOR_MASKED_LM_MAPPING),
-                *get_values(MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING),
-                GPT2DoubleHeadsModel,
-            ]:
-                inputs_dict["labels"] = torch.zeros(self.decoder_shape, dtype=torch.long, device=device)
-            elif model_class in get_values(MODEL_FOR_PRETRAINING_MAPPING):
-                inputs_dict["labels"] = torch.zeros(self.encoder_shape, dtype=torch.long, device=device)
-            else:
-                raise NotImplementedError(f"{model_class} not supported yet.")
-
-        elif "mask" in input_name or "ids" in input_name:
-            shape = self.encoder_shape if "decoder" not in input_name else self.decoder_shape
-            inputs_dict[input_name] = torch.ones(shape, dtype=torch.long, device=device)
-        elif "pixel_values" in input_name:
-            shape = [self.encoder_shape[0], model.config.num_channels, 
-                    model.config.image_size, model.config.image_size]
+        if "pixel_values" in input_name:
+            shape = [self.encoder_shape[0], model.config.num_channels,
+                     model.config.image_size, model.config.image_size]
             inputs_dict[input_name] = torch.ones(shape, dtype=torch.float, device=device)
         else:
-            shape = self.encoder_shape if "decoder" not in input_name else self.decoder_shape
-            shape += [model.config.hidden_size]
-            inputs_dict[input_name] = torch.ones(shape, dtype=torch.float, device=device)
+            # This code below is from Transformers==4.15.0. Mark in case it changes in the future.
+            inputs_dict = super()._generate_dummy_input(model, input_name)
         return inputs_dict
 
 
 def symbolic_trace(
-    model,
-    input_names = None,
-    batch_size = 1,
-    sequence_length = (128, 128),
-    num_choices = -1,
-    extra_leaf_modules=(),
-    trace_batch=None,
+        model,
+        input_names=None,
+        batch_size=1,
+        sequence_length=(128, 128),
+        num_choices=-1,
+        extra_leaf_modules=(),
+        trace_batch=None,
 ):
-
     """
     Performs symbolic tracing on the model.
 
@@ -319,7 +274,6 @@ def symbolic_trace(
             decoder_sequence_length = _generate_random_int(forbidden_values=forbidden_values)
             sequence_length = [encoder_sequence_length, decoder_sequence_length]
 
-
     if isinstance(extra_leaf_modules, list):
         extra_leaf_modules = tuple(extra_leaf_modules)
     elif isinstance(extra_leaf_modules, nn.Module):
@@ -327,11 +281,11 @@ def symbolic_trace(
     else:
         assert isinstance(extra_leaf_modules, tuple), 'leaf_modules should be tuple'
     # Tracing.
-    tracer = MpTracer(leaf_modules=default_leaf_modules+extra_leaf_modules,
-            trace_batch=trace_batch,
-            batch_size=batch_size, 
-            sequence_length=sequence_length, 
-            num_choices=num_choices)
+    tracer = MpTracer(leaf_modules=default_leaf_modules + extra_leaf_modules,
+                      trace_batch=trace_batch,
+                      batch_size=batch_size,
+                      sequence_length=sequence_length,
+                      num_choices=num_choices)
     with torch.no_grad():
         traced_graph = tracer.trace(model, concrete_args=concrete_args)
     traced = torch.fx.GraphModule(model, traced_graph)
@@ -375,4 +329,3 @@ def add_inputs_to_shards(gm, inputs):
             break
     gm.recompile()
     return gm
-                    

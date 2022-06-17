@@ -20,6 +20,7 @@ import torch
 import torch.distributed as dist
 import copy
 
+
 def print_rank_0(message):
     """If distributed is initialized print only on rank 0."""
     if torch.distributed.is_initialized():
@@ -29,16 +30,20 @@ def print_rank_0(message):
         print(message, flush=True)
 
 
-from .modules.layer_proxy import Conv1DProxy, LinearProxy
-
 func_bak = (transformers.modeling_utils.Conv1D, torch.nn.Linear)
+
+from .modules.layer_proxy import Conv1DProxy, LinearProxy
 
 # monkey patch for proxy layers
 transformers.modeling_utils.Conv1D = Conv1DProxy
 torch.nn.Linear = LinearProxy
 
+
 def get_patched_func():
+    """return transformers.modeling_utils.Conv1D and torch.nn.Linear
+    """
     return func_bak
+
 
 # # monkey patch for proxy layers
 # transformers.modeling_utils.Conv1D = Conv1DProxy
@@ -47,7 +52,8 @@ def get_patched_func():
 topo = None
 communication_grid = None
 
-def init(pp, tp, dp):
+
+def init(pp: int, tp: int, dp: int):
     """
     Initialized the distributed communication groups, include data parallel, 
     tensor model parallel and pipeline model parallel. Each parallel degree 
@@ -65,8 +71,7 @@ def init(pp, tp, dp):
     global topo
     topo = PipeModelDataParallelTopology(num_pp=pp, num_mp=tp, num_dp=dp)
     global communication_grid
-    communication_grid = PipelineParallelGrid(topo, dist.new_group(ranks=range(dist.get_world_size())))
-    
+    communication_grid = PipelineParallelGrid(topo, dist.new_group(ranks=list(range(dist.get_world_size()))))
 
     # set mpu for transformers model
     from .mpu.initialize import set_data_parallel_group, set_model_parallel_group, set_pipe_parallel_group
@@ -81,10 +86,10 @@ def get_topo():
     global topo
     return topo
 
+
 def get_grid():
     global communication_grid
     return communication_grid
-
 
 
 from .merak_trainer import MerakTrainer
