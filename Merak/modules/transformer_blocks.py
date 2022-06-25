@@ -23,7 +23,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from transformers.models.gpt2.modeling_gpt2 import GPT2Attention, GPT2MLP, GPT2Model, BaseModelOutputWithPastAndCrossAttentions
-from transformers.utils.fx import _generate_supported_model_classes
+from transformers.utils.fx import _generate_supported_model_class_names
 from .layer_proxy import Conv1DProxy, LinearProxy
 from .. import mpu, print_rank_0
 from ..utils import get_args
@@ -32,7 +32,7 @@ from ..utils import get_args
 def tp_overlapping_available(model_class):
     SUPPORTED_MODEL_NAMES = ['gpt2']
     for model_name in SUPPORTED_MODEL_NAMES:
-        if model_class in _generate_supported_model_classes(model_name):
+        if model_class in _generate_supported_model_class_names(model_name):
             return True
     return False
 

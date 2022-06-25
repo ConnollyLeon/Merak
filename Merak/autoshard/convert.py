@@ -52,7 +52,7 @@ import gc
 from transformers import PreTrainedModel
 
 from transformers.models.auto import get_values
-
+from torch.fx import Tracer
 
 def hf_fx_compatibility(model):
     added_model = tuple(_generate_supported_model_classes('vit'))
@@ -153,7 +153,7 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     return model, result, input_to_shard
 
 
-class LayerProxyTracer(torch.fx.Tracer):
+class LayerProxyTracer(Tracer):
     """Tracer with an extended set of leaf nn.Modules."""
 
     def __init__(self, leaf_modules):
